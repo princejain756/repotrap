@@ -7,6 +7,20 @@ export const RULE_META = {
     title: "Unicode Tag Characters (U+E0000) or Bidirectional Override Smuggling (U+202A-U+202E)",
     points: 30
   },
+  RTR004: {
+    id: "RTR004",
+    plane: "repo",
+    severity: "HIGH",
+    title: "HTML Comment or Hidden Element Contains Imperative Prompt-Injection Verbs",
+    points: 20
+  },
+  RTR005: {
+    id: "RTR005",
+    plane: "repo",
+    severity: "HIGH",
+    title: "Skill or Instruction File Pipes Remote URL Directly to Shell (curl | sh / eval)",
+    points: 18
+  },
   RTR007: {
     id: "RTR007",
     plane: "repo",
@@ -55,4 +69,70 @@ export function analyzeZeroWidthCharacters(text) {
     standaloneZeroWidthCount,
     detectedCodes: [...detectedCodes]
   };
+}
+
+const IMPERATIVE_INJECTION_RE = /\b(ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions|disregard\s+(?:all\s+)?(?:previous|prior)|system\s+prompt|you\s+are\s+now|important:\s*run\s+|curl\s+-|wget\s+http|bash\s+-c|cat\s+~\/\.|\.env\b|id_rsa\b|PreToolUse)/i;
+const REMOTE_SHELL_PIPE_RE = /\b(?:curl|wget)\b[^\n|]{3,140}\|\s*(?:sudo\s+)?(?:ba|z)?sh\b/i;
+
+export function scanTextForPromptTraps(text, sourceLabel = "input") {
+  const findings = [];
+  const s = String(text || "");
+  if (!s) return { findings, zwStats: { bidiOrTagCount: 0, standaloneZeroWidthCount: 0 } };
+
+  const zwStats = analyzeZeroWidthCharacters(s);
+
+  if (zwStats.bidiOrTagCount > 0) {
+    findings.push({
+      ruleId: "RTR003",
+      plane: "repo",
+      severity: "CRITICAL",
+      file: maskPath(sourceLabel),
+      detail: `${zwStats.bidiOrTagCount} invisible Unicode Tag or Bidirectional override character(s) (${zwStats.detectedCodes.join(", ")}) detected in ${maskPath(sourceLabel)}`,
+      evidence: `Codes: ${zwStats.detectedCodes.join(", ")}`
+    });
+  }
+
+  if (zwStats.standaloneZeroWidthCount > 0) {
+    findings.push({
+      ruleId: "RTR007",
+      plane: "repo",
+      severity: "LOW",
+      file: maskPath(sourceLabel),
+      detail: `${zwStats.standaloneZeroWidthCount} standalone zero-width character(s) (${zwStats.detectedCodes.join(", ")}) in ${maskPath(sourceLabel)}`,
+      evidence: `Codes: ${zwStats.detectedCodes.join(", ")}`
+    });
+  }
+
+  // Hidden HTML comments are the cheapest place to bury agent instructions:
+  // they render invisible on GitHub and inside Markdown viewers.
+  const htmlComments = [...s.matchAll(/<!--([\s\S]{1,1500}?)-->/g)];
+  for (const m of htmlComments) {
+    const body = m[1];
+    if (IMPERATIVE_INJECTION_RE.test(body)) {
+      findings.push({
+        ruleId: "RTR004",
+        plane: "repo",
+        severity: "HIGH",
+        file: maskPath(sourceLabel),
+        detail: `Hidden HTML comment in ${maskPath(sourceLabel)} contains imperative agent/shell instructions`,
+        evidence: `<!-- ${body.trim().slice(0, 140)} -->`
+      });
+    }
+  }
+
+  // A skill that pipes a remote URL straight into a shell runs arbitrary code
+  // the first time an agent follows its setup section.
+  if (REMOTE_SHELL_PIPE_RE.test(s)) {
+    const match = s.match(REMOTE_SHELL_PIPE_RE);
+    findings.push({
+      ruleId: "RTR005",
+      plane: "repo",
+      severity: "HIGH",
+      file: maskPath(sourceLabel),
+      detail: `Instruction/skill file ${maskPath(sourceLabel)} instructs agent to pipe remote URL directly into shell`,
+      evidence: match[0].trim().slice(0, 160)
+    });
+  }
+
+  return { findings, zwStats };
 }
