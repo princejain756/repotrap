@@ -1,5 +1,22 @@
+import fs from "node:fs";
+import path from "node:path";
+
 export const RULE_META = {
   // Plane 1: Untrusted Repo, Skill & Issue/PR Surface
+  RTR001: {
+    id: "RTR001",
+    plane: "repo",
+    severity: "CRITICAL",
+    title: "Workspace .claude/settings.json Defines Auto-Executing Hooks or Helper Scripts",
+    points: 30
+  },
+  RTR002: {
+    id: "RTR002",
+    plane: "repo",
+    severity: "CRITICAL",
+    title: "Workspace .mcp.json or .vscode/tasks.json Spawns Commands on Folder Open",
+    points: 25
+  },
   RTR003: {
     id: "RTR003",
     plane: "repo",
@@ -20,6 +37,13 @@ export const RULE_META = {
     severity: "HIGH",
     title: "Skill or Instruction File Pipes Remote URL Directly to Shell (curl | sh / eval)",
     points: 18
+  },
+  RTR006: {
+    id: "RTR006",
+    plane: "repo",
+    severity: "MEDIUM",
+    title: "package.json Lifecycle Hook (preinstall/postinstall) Runs Network or Shell Payload",
+    points: 15
   },
   RTR007: {
     id: "RTR007",
@@ -135,4 +159,101 @@ export function scanTextForPromptTraps(text, sourceLabel = "input") {
   }
 
   return { findings, zwStats };
+}
+
+export function scanWorkspaceConfigFiles(repoDir) {
+  const findings = [];
+
+  // 1. Check .claude/settings.json and .claude/settings.local.json inside repo
+  for (const rel of [".claude/settings.json", ".claude/settings.local.json"]) {
+    const p = path.join(repoDir, rel);
+    if (!fs.existsSync(p)) continue;
+    try {
+      const cfg = JSON.parse(fs.readFileSync(p, "utf8"));
+      const dangerousKeys = ["hooks", "apiKeyHelper", "otelHeadersHelper", "awsAuthRefresh", "statusLine"].filter(
+        (k) => Boolean(cfg?.[k])
+      );
+      if (dangerousKeys.length > 0) {
+        findings.push({
+          ruleId: "RTR001",
+          plane: "repo",
+          severity: "CRITICAL",
+          file: maskPath(p),
+          detail: `Workspace ${rel} defines auto-executing ${dangerousKeys.join(", ")} on session start or tool invocation`,
+          evidence: `Keys: ${dangerousKeys.join(", ")}`
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // 2. Check .mcp.json and .vscode/tasks.json
+  const mcpPath = path.join(repoDir, ".mcp.json");
+  if (fs.existsSync(mcpPath)) {
+    try {
+      const mcp = JSON.parse(fs.readFileSync(mcpPath, "utf8"));
+      const servers = Object.keys(mcp?.mcpServers || mcp || {});
+      if (servers.length > 0) {
+        findings.push({
+          ruleId: "RTR002",
+          plane: "repo",
+          severity: "CRITICAL",
+          file: maskPath(mcpPath),
+          detail: `Workspace .mcp.json defines ${servers.length} repo-scoped MCP server(s) (${servers.slice(0, 4).join(", ")})`,
+          evidence: `Servers: ${servers.slice(0, 4).join(", ")}`
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const vscodeTasksPath = path.join(repoDir, ".vscode", "tasks.json");
+  if (fs.existsSync(vscodeTasksPath)) {
+    try {
+      const raw = fs.readFileSync(vscodeTasksPath, "utf8");
+      if (/"runOn"\s*:\s*"folderOpen"/i.test(raw)) {
+        findings.push({
+          ruleId: "RTR002",
+          plane: "repo",
+          severity: "CRITICAL",
+          file: maskPath(vscodeTasksPath),
+          detail: `Workspace .vscode/tasks.json contains task with "runOn": "folderOpen"`,
+          evidence: `"runOn": "folderOpen"`
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // 3. Check package.json lifecycle hooks
+  const pkgPath = path.join(repoDir, "package.json");
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+      const scripts = pkg?.scripts || {};
+      for (const hook of ["preinstall", "install", "postinstall", "prepare"]) {
+        const cmd = scripts[hook];
+        if (!cmd) continue;
+        if (/\b(curl|wget|nc\s|netcat|bash\s+-c|sh\s+-c|base64\s+-d|eval\s|http:\/\/|https:\/\/)\b/i.test(cmd)) {
+          findings.push({
+            ruleId: "RTR006",
+            plane: "repo",
+            severity: "MEDIUM",
+            file: maskPath(pkgPath),
+            detail: `package.json "${hook}" lifecycle script runs network or shell command (${cmd.slice(0, 100)})`,
+            evidence: `${hook}: ${cmd.slice(0, 120)}`
+          });
+        } else {
+          benignLifecycleCount++;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return { findings };
 }
