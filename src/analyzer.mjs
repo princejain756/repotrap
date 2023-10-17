@@ -51,6 +51,22 @@ export const RULE_META = {
     severity: "LOW",
     title: "Standalone Zero-Width Space (U+200B / U+FEFF) in Skill or Documentation File",
     points: 5
+  },
+
+  // Plane 2: Session Transcript tool_result & Issue Poisoning Replay
+  RTR008: {
+    id: "RTR008",
+    plane: "transcript",
+    severity: "CRITICAL",
+    title: "Spoofed <system-reminder> or </tool_result> Delimiter Inside Untrusted Tool Output",
+    points: 30
+  },
+  RTR009: {
+    id: "RTR009",
+    plane: "transcript",
+    severity: "CRITICAL",
+    title: "Explicit Prompt-Override or Instruction-Hijack Phrase Inside Tool Output",
+    points: 25
   }
 };
 
@@ -96,19 +112,20 @@ export function analyzeZeroWidthCharacters(text) {
 }
 
 const IMPERATIVE_INJECTION_RE = /\b(ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions|disregard\s+(?:all\s+)?(?:previous|prior)|system\s+prompt|you\s+are\s+now|important:\s*run\s+|curl\s+-|wget\s+http|bash\s+-c|cat\s+~\/\.|\.env\b|id_rsa\b|PreToolUse)/i;
+const SPOOFED_DELIMITER_RE = /<\/?(?:system-reminder|tool_result|EXTREMELY_IMPORTANT|function_calls|antml:invoke)\b/i;
 const REMOTE_SHELL_PIPE_RE = /\b(?:curl|wget)\b[^\n|]{3,140}\|\s*(?:sudo\s+)?(?:ba|z)?sh\b/i;
 
-export function scanTextForPromptTraps(text, sourceLabel = "input") {
+export function scanTextForPromptTraps(text, sourceLabel = "input", isTranscriptToolResult = false) {
   const findings = [];
   const s = String(text || "");
-  if (!s) return { findings, zwStats: { bidiOrTagCount: 0, standaloneZeroWidthCount: 0 } };
+  if (!s) return { findings, zwStats: { bidiOrTagCount: 0, standaloneZeroWidthCount: 0, emojiZwjCount: 0 } };
 
   const zwStats = analyzeZeroWidthCharacters(s);
 
   if (zwStats.bidiOrTagCount > 0) {
     findings.push({
       ruleId: "RTR003",
-      plane: "repo",
+      plane: isTranscriptToolResult ? "transcript" : "repo",
       severity: "CRITICAL",
       file: maskPath(sourceLabel),
       detail: `${zwStats.bidiOrTagCount} invisible Unicode Tag or Bidirectional override character(s) (${zwStats.detectedCodes.join(", ")}) detected in ${maskPath(sourceLabel)}`,
@@ -122,17 +139,16 @@ export function scanTextForPromptTraps(text, sourceLabel = "input") {
       plane: "repo",
       severity: "LOW",
       file: maskPath(sourceLabel),
-      detail: `${zwStats.standaloneZeroWidthCount} standalone zero-width character(s) (${zwStats.detectedCodes.join(", ")}) in ${maskPath(sourceLabel)}`,
+      detail: `${zwStats.standaloneZeroWidthCount} standalone zero-width/directionality character(s) (${zwStats.detectedCodes.join(", ")}) in ${maskPath(sourceLabel)}`,
       evidence: `Codes: ${zwStats.detectedCodes.join(", ")}`
     });
   }
 
-  // Hidden HTML comments are the cheapest place to bury agent instructions:
-  // they render invisible on GitHub and inside Markdown viewers.
+  // Check HTML comments for hidden prompt injection
   const htmlComments = [...s.matchAll(/<!--([\s\S]{1,1500}?)-->/g)];
   for (const m of htmlComments) {
     const body = m[1];
-    if (IMPERATIVE_INJECTION_RE.test(body)) {
+    if (IMPERATIVE_INJECTION_RE.test(body) || SPOOFED_DELIMITER_RE.test(body)) {
       findings.push({
         ruleId: "RTR004",
         plane: "repo",
@@ -144,9 +160,36 @@ export function scanTextForPromptTraps(text, sourceLabel = "input") {
     }
   }
 
-  // A skill that pipes a remote URL straight into a shell runs arbitrary code
-  // the first time an agent follows its setup section.
-  if (REMOTE_SHELL_PIPE_RE.test(s)) {
+  // Check for spoofed harness delimiters inside untrusted tool results or issue bodies
+  if (isTranscriptToolResult && SPOOFED_DELIMITER_RE.test(s)) {
+    const match = s.match(SPOOFED_DELIMITER_RE);
+    findings.push({
+      ruleId: "RTR008",
+      plane: "transcript",
+      severity: "CRITICAL",
+      file: maskPath(sourceLabel),
+      detail: `Untrusted tool output in ${maskPath(sourceLabel)} contains spoofed harness delimiter (${match[0]})`,
+      evidence: match[0]
+    });
+  }
+
+  // Check for explicit prompt override phrases inside tool_result
+  if (
+    isTranscriptToolResult &&
+    /\b(ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions|disregard\s+(?:all\s+)?(?:previous|prior)\s+instructions|new\s+system\s+instructions\s*:)/i.test(s)
+  ) {
+    findings.push({
+      ruleId: "RTR009",
+      plane: "transcript",
+      severity: "CRITICAL",
+      file: maskPath(sourceLabel),
+      detail: `Untrusted tool output in ${maskPath(sourceLabel)} contains explicit prompt-override phrase`,
+      evidence: s.match(/\b(ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions|disregard\s+(?:all\s+)?(?:previous|prior)\s+instructions|new\s+system\s+instructions\s*:)/i)[0]
+    });
+  }
+
+  // Check for remote shell pipe in skill / instruction files
+  if (!isTranscriptToolResult && REMOTE_SHELL_PIPE_RE.test(s)) {
     const match = s.match(REMOTE_SHELL_PIPE_RE);
     findings.push({
       ruleId: "RTR005",
