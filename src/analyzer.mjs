@@ -67,6 +67,34 @@ export const RULE_META = {
     severity: "CRITICAL",
     title: "Explicit Prompt-Override or Instruction-Hijack Phrase Inside Tool Output",
     points: 25
+  },
+  RTR010: {
+    id: "RTR010",
+    plane: "transcript",
+    severity: "HIGH",
+    title: "Hidden HTML Comment Inside Tool Output Contains Imperative Agent Instructions",
+    points: 18
+  },
+  RTR011: {
+    id: "RTR011",
+    plane: "transcript",
+    severity: "MEDIUM",
+    title: "Standalone Zero-Width or Directionality Marks (U+200B / U+200E) Ingested in Tool Output",
+    points: 8
+  },
+  RTR012: {
+    id: "RTR012",
+    plane: "transcript",
+    severity: "INFO",
+    title: "Harness-Native <system-reminder> Attachment Rows Filtered (False-Positive Guard)",
+    points: 0
+  },
+  RTR013: {
+    id: "RTR013",
+    plane: "repo",
+    severity: "INFO",
+    title: "Benign Local package.json Build Lifecycle Scripts Separated (False-Positive Guard)",
+    points: 0
   }
 };
 
@@ -118,7 +146,7 @@ const REMOTE_SHELL_PIPE_RE = /\b(?:curl|wget)\b[^\n|]{3,140}\|\s*(?:sudo\s+)?(?:
 export function scanTextForPromptTraps(text, sourceLabel = "input", isTranscriptToolResult = false) {
   const findings = [];
   const s = String(text || "");
-  if (!s) return { findings, zwStats: { bidiOrTagCount: 0, standaloneZeroWidthCount: 0, emojiZwjCount: 0 } };
+  if (!s) return { findings, zwStats: { bidiOrTagCount: 0, standaloneZeroWidthCount: 0 } };
 
   const zwStats = analyzeZeroWidthCharacters(s);
 
@@ -135,9 +163,9 @@ export function scanTextForPromptTraps(text, sourceLabel = "input", isTranscript
 
   if (zwStats.standaloneZeroWidthCount > 0) {
     findings.push({
-      ruleId: "RTR007",
-      plane: "repo",
-      severity: "LOW",
+      ruleId: isTranscriptToolResult ? "RTR011" : "RTR007",
+      plane: isTranscriptToolResult ? "transcript" : "repo",
+      severity: isTranscriptToolResult ? "MEDIUM" : "LOW",
       file: maskPath(sourceLabel),
       detail: `${zwStats.standaloneZeroWidthCount} standalone zero-width/directionality character(s) (${zwStats.detectedCodes.join(", ")}) in ${maskPath(sourceLabel)}`,
       evidence: `Codes: ${zwStats.detectedCodes.join(", ")}`
@@ -150,8 +178,8 @@ export function scanTextForPromptTraps(text, sourceLabel = "input", isTranscript
     const body = m[1];
     if (IMPERATIVE_INJECTION_RE.test(body) || SPOOFED_DELIMITER_RE.test(body)) {
       findings.push({
-        ruleId: "RTR004",
-        plane: "repo",
+        ruleId: isTranscriptToolResult ? "RTR010" : "RTR004",
+        plane: isTranscriptToolResult ? "transcript" : "repo",
         severity: "HIGH",
         file: maskPath(sourceLabel),
         detail: `Hidden HTML comment in ${maskPath(sourceLabel)} contains imperative agent/shell instructions`,
@@ -206,6 +234,7 @@ export function scanTextForPromptTraps(text, sourceLabel = "input", isTranscript
 
 export function scanWorkspaceConfigFiles(repoDir) {
   const findings = [];
+  let benignLifecycleCount = 0;
 
   // 1. Check .claude/settings.json and .claude/settings.local.json inside repo
   for (const rel of [".claude/settings.json", ".claude/settings.local.json"]) {
@@ -298,5 +327,89 @@ export function scanWorkspaceConfigFiles(repoDir) {
     }
   }
 
-  return { findings };
+  return { findings, benignLifecycleCount };
+}
+
+export function scanTranscriptFile(filePath) {
+  const findings = [];
+  let harnessSystemReminderCount = 0;
+  let spoofedToolResultDelimiterCount = 0;
+  let toolResultZeroWidthCount = 0;
+  let toolResultHtmlCommentCount = 0;
+
+  const content = fs.readFileSync(filePath, "utf8");
+  const lines = content.split("\n");
+
+  for (const line of lines) {
+    if (!line.trim() || line.length > 120000) continue;
+
+    // Check if line has <system-reminder>
+    const hasSysRem = line.includes("<system-reminder>");
+    const hasToolRes =
+      line.includes("tool_result") ||
+      line.includes("function_call_output") ||
+      line.includes("custom_tool_call_output");
+    const hasZw = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/.test(line);
+    const hasComment = line.includes("<!--");
+    const hasOverride = /ignore (?:all )?(?:previous|prior) instructions/i.test(line);
+
+    if (!hasSysRem && !hasToolRes && !hasZw && !hasComment && !hasOverride) continue;
+
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    // False-positive guard (RTR012): Claude Code native attachment / api-request rows
+    if (
+      hasSysRem &&
+      (obj.type === "attachment" ||
+        obj.type === "api-request-shape" ||
+        obj.type === "api-request-blob")
+    ) {
+      harnessSystemReminderCount++;
+      continue;
+    }
+
+    // Extract untrusted tool_result / function_call_output text
+    const toolPayloads = [];
+    if (Array.isArray(obj?.message?.content)) {
+      for (const c of obj.message.content) {
+        if (c?.type === "tool_result") {
+          const txt = typeof c.content === "string" ? c.content : JSON.stringify(c.content || "");
+          toolPayloads.push(txt);
+        }
+      }
+    }
+    if (
+      obj?.type === "response_item" &&
+      (obj?.payload?.type === "function_call_output" || obj?.payload?.type === "custom_tool_call_output")
+    ) {
+      const rawOut = obj.payload.output;
+      toolPayloads.push(typeof rawOut === "string" ? rawOut : JSON.stringify(rawOut || ""));
+    }
+    if (obj?.type === "user" && typeof obj?.message?.content === "string") {
+      toolPayloads.push(obj.message.content);
+    }
+
+    for (const payload of toolPayloads) {
+      if (payload.includes("<!--")) toolResultHtmlCommentCount++;
+      const res = scanTextForPromptTraps(payload, path.basename(filePath), true);
+      for (const f of res.findings) {
+        if (f.ruleId === "RTR008") spoofedToolResultDelimiterCount++;
+        findings.push(f);
+      }
+      toolResultZeroWidthCount += res.zwStats.standaloneZeroWidthCount;
+    }
+  }
+
+  return {
+    findings,
+    harnessSystemReminderCount,
+    spoofedToolResultDelimiterCount,
+    toolResultZeroWidthCount,
+    toolResultHtmlCommentCount
+  };
 }
