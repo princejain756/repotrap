@@ -95,6 +95,13 @@ export const RULE_META = {
     severity: "INFO",
     title: "Benign Local package.json Build Lifecycle Scripts Separated (False-Positive Guard)",
     points: 0
+  },
+  RTR014: {
+    id: "RTR014",
+    plane: "repo",
+    severity: "INFO",
+    title: "Legitimate Emoji ZWJ (U+200D) Sequences Separated from Steganography (False-Positive Guard)",
+    points: 0
   }
 };
 
@@ -109,10 +116,12 @@ export function maskPath(p) {
 // and Bidirectional Overrides (U+202A - U+202E, U+2066 - U+2069)
 const BIDI_OR_TAG_RE = /[\u202A-\u202E\u2066-\u2069]|\uDB40[\uDC00-\uDC7F]/g;
 
+// Standalone zero-width characters (excluding U+200D ZWJ when between non-ASCII emoji surrogates)
 export function analyzeZeroWidthCharacters(text) {
   const s = String(text || "");
   let bidiOrTagCount = 0;
   let standaloneZeroWidthCount = 0;
+  let emojiZwjCount = 0;
   const detectedCodes = new Set();
 
   const bidiMatches = s.match(BIDI_OR_TAG_RE);
@@ -126,7 +135,17 @@ export function analyzeZeroWidthCharacters(text) {
 
   for (let i = 0; i < s.length; i++) {
     const code = s.charCodeAt(i);
-    if (code === 0x200b || (code === 0xfeff && i > 0)) {
+    if (code === 0x200d) {
+      // Check if surrounded by high/low surrogate or emoji Pictographic character
+      const prev = i > 0 ? s.charCodeAt(i - 1) : 0;
+      const next = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+      if (prev > 127 && next > 127) {
+        emojiZwjCount++;
+      } else {
+        standaloneZeroWidthCount++;
+        detectedCodes.add("U+200D");
+      }
+    } else if (code === 0x200b || code === 0x200c || code === 0x200e || code === 0x200f || (code === 0xfeff && i > 0)) {
       standaloneZeroWidthCount++;
       detectedCodes.add("U+" + code.toString(16).toUpperCase().padStart(4, "0"));
     }
@@ -135,6 +154,7 @@ export function analyzeZeroWidthCharacters(text) {
   return {
     bidiOrTagCount,
     standaloneZeroWidthCount,
+    emojiZwjCount,
     detectedCodes: [...detectedCodes]
   };
 }
@@ -146,7 +166,7 @@ const REMOTE_SHELL_PIPE_RE = /\b(?:curl|wget)\b[^\n|]{3,140}\|\s*(?:sudo\s+)?(?:
 export function scanTextForPromptTraps(text, sourceLabel = "input", isTranscriptToolResult = false) {
   const findings = [];
   const s = String(text || "");
-  if (!s) return { findings, zwStats: { bidiOrTagCount: 0, standaloneZeroWidthCount: 0 } };
+  if (!s) return { findings, zwStats: { bidiOrTagCount: 0, standaloneZeroWidthCount: 0, emojiZwjCount: 0 } };
 
   const zwStats = analyzeZeroWidthCharacters(s);
 
