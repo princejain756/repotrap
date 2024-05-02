@@ -433,3 +433,52 @@ export function scanTranscriptFile(filePath) {
     toolResultHtmlCommentCount
   };
 }
+
+function walkFiles(dir, predicate, out = [], maxDepth = 4, curDepth = 0) {
+  if (!dir || !fs.existsSync(dir) || curDepth > maxDepth) return out;
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    if (e.name === "node_modules" || e.name === ".git" || e.name === "dist" || e.name === "build") continue;
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      walkFiles(full, predicate, out, maxDepth, curDepth + 1);
+    } else if (predicate(full, e.name)) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+export function computeRiskSummary(findings) {
+  const ruleCounts = {};
+  const severityCounts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
+
+  for (const f of findings) {
+    ruleCounts[f.ruleId] = (ruleCounts[f.ruleId] || 0) + 1;
+    if (severityCounts[f.severity] !== undefined) {
+      severityCounts[f.severity]++;
+    }
+  }
+
+  let penalty = 0;
+  for (const [ruleId, count] of Object.entries(ruleCounts)) {
+    const meta = RULE_META[ruleId];
+    if (!meta || meta.points === 0) continue;
+    const mult = Math.min(2.0, 1 + Math.log10(count) * 0.5);
+    penalty += Math.round(meta.points * mult);
+  }
+
+  const score = Math.max(0, Math.min(100, 100 - penalty));
+  let grade = "A";
+  if (score < 45) grade = "F";
+  else if (score < 60) grade = "D";
+  else if (score < 75) grade = "C";
+  else if (score < 90) grade = "B";
+
+  return { score, grade, ruleCounts, severityCounts };
+}
