@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 
 export const RULE_META = {
   // Plane 1: Untrusted Repo, Skill & Issue/PR Surface
@@ -481,4 +482,132 @@ export function computeRiskSummary(findings) {
   else if (score < 90) grade = "B";
 
   return { score, grade, ruleCounts, severityCounts };
+}
+
+export function auditRepoTraps(options = {}) {
+  const homeDir = options.homeDir || os.homedir();
+  const skillDirs = options.skillDirs || [
+    path.join(homeDir, ".gemini", "config", "skills"),
+    path.join(homeDir, ".agents", "skills")
+  ];
+  const workspaceDir = options.workspaceDir || process.cwd();
+
+  const skillFiles = [];
+  for (const sd of skillDirs) {
+    walkFiles(sd, (_p, name) => name.endsWith(".md"), skillFiles, 3);
+  }
+
+  const transcriptFiles = options.transcriptFiles || [
+    ...walkFiles(path.join(homeDir, ".claude", "projects"), (_p, n) => n.endsWith(".jsonl"), [], 3),
+    ...walkFiles(path.join(homeDir, ".codex", "sessions"), (_p, n) => n.endsWith(".jsonl"), [], 4)
+  ];
+
+  const allFindings = [];
+  let emojiZwjFilteredCount = 0;
+  let skillZeroWidthCount = 0;
+  let benignLifecycleCount = 0;
+  let reposChecked = 0;
+
+  // 1. Scan skill markdown files
+  for (const sf of skillFiles) {
+    const text = fs.readFileSync(sf, "utf8");
+    const res = scanTextForPromptTraps(text, sf, false);
+    allFindings.push(...res.findings);
+    emojiZwjFilteredCount += res.zwStats.emojiZwjCount;
+    skillZeroWidthCount += res.zwStats.standaloneZeroWidthCount;
+  }
+
+  // 2. Scan workspace repo(s)
+  if (fs.existsSync(workspaceDir)) {
+    const subDirs = [workspaceDir];
+    try {
+      for (const e of fs.readdirSync(workspaceDir, { withFileTypes: true })) {
+        if (e.isDirectory() && !e.name.startsWith(".")) {
+          subDirs.push(path.join(workspaceDir, e.name));
+        }
+      }
+    } catch {
+      // ignore
+    }
+    for (const dir of subDirs.slice(0, 35)) {
+      if (fs.existsSync(path.join(dir, "package.json")) || fs.existsSync(path.join(dir, ".claude")) || fs.existsSync(path.join(dir, ".mcp.json"))) {
+        reposChecked++;
+        const wsRes = scanWorkspaceConfigFiles(dir);
+        allFindings.push(...wsRes.findings);
+        benignLifecycleCount += wsRes.benignLifecycleCount;
+      }
+    }
+  }
+
+  // 3. Scan session transcripts
+  let harnessSystemReminderCount = 0;
+  let transcriptsWithZeroWidth = 0;
+  let totalTranscriptZeroWidth = 0;
+  let toolResultHtmlComments = 0;
+
+  for (const tf of transcriptFiles) {
+    const tRes = scanTranscriptFile(tf);
+    allFindings.push(...tRes.findings);
+    harnessSystemReminderCount += tRes.harnessSystemReminderCount;
+    if (tRes.toolResultZeroWidthCount > 0) {
+      transcriptsWithZeroWidth++;
+      totalTranscriptZeroWidth += tRes.toolResultZeroWidthCount;
+    }
+    toolResultHtmlComments += tRes.toolResultHtmlCommentCount;
+  }
+
+  if (harnessSystemReminderCount > 0) {
+    allFindings.push({
+      ruleId: "RTR012",
+      plane: "transcript",
+      severity: "INFO",
+      file: "session-transcripts",
+      detail: `Filtered ${harnessSystemReminderCount} Claude Code harness-native <system-reminder> attachment rows from untrusted tool_result delimiter checks`,
+      evidence: `${harnessSystemReminderCount} native attachment rows vs ${allFindings.filter((f) => f.ruleId === "RTR008").length} spoofed tool_result delimiters`
+    });
+  }
+
+  if (benignLifecycleCount > 0) {
+    allFindings.push({
+      ruleId: "RTR013",
+      plane: "repo",
+      severity: "INFO",
+      file: "workspace-repos",
+      detail: `Separated ${benignLifecycleCount} benign local package.json build/prepare script(s) from network preinstall/postinstall traps`,
+      evidence: `${benignLifecycleCount} local build lifecycle scripts`
+    });
+  }
+
+  if (emojiZwjFilteredCount > 0) {
+    allFindings.push({
+      ruleId: "RTR014",
+      plane: "repo",
+      severity: "INFO",
+      file: "skill-markdown-files",
+      detail: `Separated ${emojiZwjFilteredCount} legitimate composite Emoji ZWJ (U+200D) sequence(s) from standalone zero-width steganography`,
+      evidence: `${emojiZwjFilteredCount} emoji ZWJ vs ${skillZeroWidthCount} standalone U+200B in skills`
+    });
+  }
+
+  const summary = computeRiskSummary(allFindings);
+
+  return {
+    skillFilesScanned: skillFiles.length,
+    reposChecked,
+    sessionsScanned: transcriptFiles.length,
+    score: summary.score,
+    grade: summary.grade,
+    severityCounts: summary.severityCounts,
+    ruleCounts: summary.ruleCounts,
+    metrics: {
+      harnessSystemReminderCount,
+      benignLifecycleCount,
+      emojiZwjFilteredCount,
+      skillZeroWidthCount,
+      transcriptsWithZeroWidth,
+      totalTranscriptZeroWidth,
+      toolResultHtmlComments
+    },
+    findings: allFindings
+  };
 }
