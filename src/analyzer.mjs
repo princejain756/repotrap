@@ -655,3 +655,71 @@ if (BIDI_OR_TAG.test(text) || (payload?.tool_response && SPOOFED_TAG.test(text))
 
   return { hookScript, settingsSnippet };
 }
+
+export function getDemoResult() {
+  return {
+    skillFilesScanned: 525,
+    reposChecked: 16,
+    sessionsScanned: 153,
+    score: 64,
+    grade: "C",
+    severityCounts: {
+      CRITICAL: 0,
+      HIGH: 1,
+      MEDIUM: 15,
+      LOW: 1,
+      INFO: 3
+    },
+    ruleCounts: {
+      RTR005: 1,
+      RTR011: 15,
+      RTR007: 1,
+      RTR012: 1,
+      RTR013: 1,
+      RTR014: 1
+    },
+    metrics: {
+      harnessSystemReminderCount: 1526,
+      benignLifecycleCount: 7,
+      emojiZwjFilteredCount: 1,
+      skillZeroWidthCount: 2,
+      transcriptsWithZeroWidth: 5,
+      totalTranscriptZeroWidth: 142,
+      toolResultHtmlComments: 2
+    },
+    findings: [
+      {
+        ruleId: "RTR005",
+        plane: "repo",
+        severity: "HIGH",
+        file: "~/.agents/skills/composio-cli/SKILL.md",
+        detail: "Instruction/skill file ~/.agents/skills/composio-cli/SKILL.md instructs agent to pipe remote URL directly into shell",
+        evidence: "curl -fsSL https://composio.dev/install | bash"
+      },
+      {
+        ruleId: "RTR011",
+        plane: "transcript",
+        severity: "MEDIUM",
+        file: "rollout-2026-10-11T14-16-47-01a12a24.jsonl",
+        detail: "48 standalone zero-width/directionality character(s) (U+200B) in rollout-2026-10-11T14-16-47-01a12a24.jsonl (custom_tool_call_output)",
+        evidence: "Codes: U+200B"
+      },
+      {
+        ruleId: "RTR011",
+        plane: "transcript",
+        severity: "MEDIUM",
+        file: "c71c67c1-e80e-477d-b5a1-c072488e72a8.jsonl",
+        detail: "2 standalone zero-width/directionality character(s) (U+200B) in c71c67c1-e80e-477d-b5a1-c072488e72a8.jsonl",
+        evidence: "Codes: U+200B"
+      },
+      {
+        ruleId: "RTR007",
+        plane: "repo",
+        severity: "LOW",
+        file: "~/.agents/skills/writing-clearly-and-concisely/signs-of-ai-writing.md",
+        detail: "2 standalone zero-width/directionality character(s) (U+200B) in ~/.agents/skills/writing-clearly-and-concisely/signs-of-ai-writing.md",
+        evidence: "Codes: U+200B"
+      }
+    ]
+  };
+}
