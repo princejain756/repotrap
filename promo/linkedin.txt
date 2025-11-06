@@ -1,0 +1,15 @@
+Reading the r/ClaudeAI thread today on why 98% of the 16,060 open GitHub issues on anthropics/claude-code cannot just be handed to autonomous triage agents made me test what untrusted-input traps already sit in my own local setup across 525 installed skill markdown files, 16 workspace repos, and 153 Claude Code and Codex CLI transcripts.
+
+My first scanner script hit three false-positive and blind-spot walls right away:
+1. Searching raw .jsonl lines for <system-reminder> to catch spoofed delimiter tags flagged 1,526 rows across 125 sessions because Claude Code writes its own internal system reminders as type: "attachment" and api-request records. You have to parse the JSONL record type and only inspect untrusted tool_result and function_call_output payloads.
+2. In Codex CLI transcripts, custom_tool_call_output stores payload.output as a nested JSON object instead of a string. My first pass called String(payload.output), turning the tool output into "[object Object]" and missing 138 of the 142 standalone zero-width characters (U+200B and U+200E) ingested across 5 sessions.
+3. Scanning skill files for zero-width characters flagged composite emojis until I separated legitimate Emoji Zero-Width Joiner (U+200D) sequences from standalone U+200B spaces,Unicode Tag characters (U+E0000), and bidirectional overrides.
+
+Once those three guards were in place, the scan surfaced 1 installed skill (composio-cli/SKILL.md) piping a remote URL directly into bash (curl | bash), 2 standalone U+200B characters in a writing skill, and 142 zero-width/directionality characters across 15 tool outputs.
+
+I published the zero-dependency scanner as repotrap (npx repotrap). It audits workspace repos for .claude/settings.json hooks, .mcp.json servers, and .vscode/tasks.json folderOpen traps, scans skills and transcripts across 14 rules (RTR001 to RTR014), and includes a gh-issue mode to pre-scan any GitHub issue or PR body before handing it to an agent.
+
+Repo: https://github.com/princejain756/repotrap
+npm: https://www.npmjs.com/package/repotrap
+
+Do you pre-scan external GitHub issues or cloned PR branches before running Claude Code or Codex inside them?
