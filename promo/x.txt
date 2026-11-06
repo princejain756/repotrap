@@ -1,0 +1,6 @@
+Scanned 525 local skills & 153 Claude Code/Codex logs for prompt-injection traps.
+
+Raw regex hit 1,526 <system-reminder> tags from attachment rows & missed 138 zero-width chars in object outputs.
+
+Built repotrap (npx repotrap):
+github.com/princejain756/repotrap
