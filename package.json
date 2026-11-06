@@ -1,0 +1,41 @@
+{
+  "name": "repotrap",
+  "version": "0.1.0",
+  "description": "Zero-dependency prompt-injection, invisible Unicode steganography, spoofed system-reminder delimiter, and repo-open execution trap scanner for Claude Code, Codex CLI, skills, and GitHub issues.",
+  "type": "module",
+  "bin": {
+    "repotrap": "./bin/repotrap.mjs"
+  },
+  "main": "./src/analyzer.mjs",
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test tests/repotrap.test.mjs",
+    "demo": "node ./bin/repotrap.mjs --demo"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "prompt-injection",
+    "security",
+    "unicode",
+    "github-issues",
+    "mcp",
+    "ai-agents",
+    "skills",
+    "static-analysis"
+  ],
+  "author": "Prince Jain <princejain756@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/princejain756/repotrap.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
